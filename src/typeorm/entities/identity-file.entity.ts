@@ -1,4 +1,5 @@
-import { Expose } from 'class-transformer';
+import { Exclude, Expose } from 'class-transformer';
+import { AllowedIdentityFileRef } from 'src/users/identity-files/types';
 import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
 
 import { BaseEntity } from './base.entity';
@@ -7,11 +8,13 @@ import { User } from './user.entity';
 @Entity('identity-files')
 export class IdentityFile extends BaseEntity {
   @Column()
-  public referenceColumn: string;
+  public referenceColumn: AllowedIdentityFileRef;
 
+  @Exclude()
   @Column()
   public userId: number;
 
+  @Exclude()
   @Column()
   public urn: string;
 

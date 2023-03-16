@@ -1,4 +1,5 @@
-import { Controller, Get, Session, UseGuards } from '@nestjs/common';
+import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import { Request } from 'express';
 
 import { User } from '../typeorm/entities';
 import { GetUser } from '../users/decorators';
@@ -8,6 +9,13 @@ import { AuthenticatedGuard } from './guards';
 @Controller('auth')
 export class AuthController {
   public constructor(private readonly usersService: UsersService) {}
+
+  @Get('signout')
+  @UseGuards(AuthenticatedGuard)
+  public logout(@Req() req: Request) {
+    req.session.destroy((error) => {});
+    return { message: 'Sign Out Success' };
+  }
 
   @Get('me')
   @UseGuards(AuthenticatedGuard)

@@ -1,135 +1,114 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { ConfigService } from '@nestjs/config';
+import { BACK_IDENTITY_FILE, FRONT_IDENTITY_FILE, USER_PICTURE } from "./constants/identity-files-fields.constants";
+import { BadRequestException, Injectable } from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import { ConfigService } from "@nestjs/config";
 
-import { IdentityFile, User } from '../../typeorm/entities';
-import { UploadedIdentityFilesDto } from './dto';
-import { UserIdentificationStatus } from './enum';
-import { UploadedIdentityFiles } from './types';
-import { identityFilesFields } from './constants';
-import { UsersService } from '../users.service';
-import { IdentityFilesStorage } from './storage';
-import { ParamsValidator } from '../../class-validator';
-import { RemoveFileOptionsInitialState } from './initial-state';
+import { IdentityFile, User } from "../../typeorm/entities";
+import { UserIdentificationStatus } from "./enum";
+import { UsersService } from "../users.service";
+import { IdentityFilesStorage } from "./storage";
+import { ParamsValidator } from "../../class-validator";
+import { RemoveFileOptionsInitialState } from "./initial-state";
+import { AllowedIdentityFileRef } from "./types";
 
 @Injectable()
 export class IdentityFilesService {
-  public constructor(
-    @InjectRepository(IdentityFile)
-    public readonly repo: Repository<IdentityFile>,
-    private readonly identityFilesStorage: IdentityFilesStorage,
-    private readonly usersService: UsersService,
-    private readonly configService: ConfigService,
-  ) {}
+    public constructor(
+        @InjectRepository(IdentityFile)
+        public readonly repo: Repository<IdentityFile>,
+        private readonly identityFilesStorage: IdentityFilesStorage,
+        private readonly usersService: UsersService,
+        private readonly configService: ConfigService,
+        private readonly paramsValidator: ParamsValidator
+    ) {}
 
-  public async removeBy(
-    identityFile: Partial<IdentityFile>,
-    options = new RemoveFileOptionsInitialState(),
-  ): Promise<IdentityFile> {
-    const savedIdentityFile = await this.repo.findOneBy(identityFile);
-    if (savedIdentityFile) return this.remove(savedIdentityFile, options);
-  }
+    public readonly requiredIdfRefs: Array<AllowedIdentityFileRef> = [
+        FRONT_IDENTITY_FILE,
+        BACK_IDENTITY_FILE,
+        USER_PICTURE,
+    ];
 
-  public remove(
-    identityFile: IdentityFile,
-    options = new RemoveFileOptionsInitialState(),
-  ): Promise<IdentityFile> {
-    if (options.unlinkFile === true)
-      this.identityFilesStorage.remove(identityFile.urn);
-
-    return this.repo.remove(identityFile);
-  }
-
-  public async finishIdentityFilesUpload(
-    user: User,
-    uploadedIdentityFiles: UploadedIdentityFiles,
-  ): Promise<Array<IdentityFile>> {
-    if (
-      !uploadedIdentityFiles ||
-      Object.keys(uploadedIdentityFiles).length < 1
-    ) {
-      const uploadedIdentityFiles = new UploadedIdentityFilesDto();
-
-      for (const alreadyUploadedFile of await this.repo.findBy({ user }))
-        uploadedIdentityFiles[alreadyUploadedFile.referenceColumn] =
-          alreadyUploadedFile;
-
-      const missingFilesErrors = await ParamsValidator.validate(
-        uploadedIdentityFiles,
-      );
-
-      if (missingFilesErrors && Object.keys(missingFilesErrors).length > 0)
-        throw new BadRequestException(missingFilesErrors);
-
-      throw new BadRequestException(
-        `All required identity files are already uploaded, you don't need to do any other action! instead wait for us to identify your account, Thanks!`,
-      );
+    public async removeBy(
+        identityFile: Partial<IdentityFile>,
+        options = new RemoveFileOptionsInitialState()
+    ): Promise<IdentityFile> {
+        const savedIdentityFile = await this.repo.findOneBy(identityFile);
+        if (savedIdentityFile) return this.remove(savedIdentityFile, options);
     }
 
-    const errors = {};
+    public remove(identityFile: IdentityFile, options = new RemoveFileOptionsInitialState()): Promise<IdentityFile> {
+        if (options.unlinkFile === true) this.identityFilesStorage.remove(identityFile.urn);
 
-    for (const { name } of identityFilesFields) {
-      const files: Array<Express.Multer.File> = uploadedIdentityFiles[name];
-
-      const savedIdentityFile = await this.repo.findOneBy({
-        userId: user.id,
-        referenceColumn: name,
-      });
-
-      if (!Array.isArray(files) || files.length < 1) {
-        if (!savedIdentityFile) {
-          errors[name] = 'must be a png, jpg/jpeg';
-          await this.usersService.repo.update(user.id, {
-            identificationStatus: UserIdentificationStatus.MISSING_FILES,
-          });
-        }
-        continue;
-      }
-
-      const [file, ...notAllowedFiles] = files;
-
-      if (notAllowedFiles.length > 0)
-        for (const { filename } of notAllowedFiles)
-          this.identityFilesStorage.remove(filename);
-
-      const { validFile, error } = await this.identityFilesStorage.validate(
-        file,
-      );
-
-      if (!validFile) {
-        if (!savedIdentityFile) {
-          await this.usersService.repo.update(user.id, {
-            identificationStatus: UserIdentificationStatus.MISSING_FILES,
-          });
-        }
-
-        errors[name] = error;
-        this.identityFilesStorage.remove(file.filename);
-        continue;
-      }
-
-      if (savedIdentityFile) await this.remove(savedIdentityFile);
-
-      const fileRef = this.repo.create({
-        referenceColumn: name,
-        urn: file.filename,
-        url: `${this.configService.get<string>('APP_URL')}${
-          this.identityFilesStorage.destination
-        }${file.filename}`,
-        user,
-      });
-
-      await this.repo.save(fileRef);
+        return this.repo.remove(identityFile);
     }
 
-    if (Object.keys(errors).length > 0) throw new BadRequestException(errors);
+    public async hasAllFiles(user: User): Promise<boolean> {
+        const idf = await this.repo.findBy({ userId: user.id });
+        if (idf.length < 3) return false;
 
-    this.usersService.repo.update(user.id, {
-      identificationStatus:
-        UserIdentificationStatus.IDENTIFICATION_FILES_UPLOADED,
-    });
+        for (const ref of this.requiredIdfRefs) {
+            if (!idf.find((file) => file.referenceColumn === ref)) return false;
+        }
 
-    return this.repo.findBy({ userId: user.id });
-  }
+        return true;
+    }
+
+    public async syncFile(user: User, ref: AllowedIdentityFileRef, file: Express.Multer.File): Promise<IdentityFile> {
+        if (!this.requiredIdfRefs.includes(ref)) {
+            if (file) this.identityFilesStorage.remove(file.filename);
+            throw new BadRequestException("Unknown File");
+        }
+
+        const savedFile = await this.repo.findOneBy({
+            userId: user.id,
+            referenceColumn: ref,
+        });
+
+        if (!file) {
+            if (!savedFile)
+                await this.usersService.repo.update(user.id, {
+                    identificationStatus: UserIdentificationStatus.MISSING_FILES,
+                });
+
+            throw new BadRequestException({ [ref]: "must be a png, jpg/jpeg" });
+        }
+
+        const { validFile, error } = await this.identityFilesStorage.validate(file);
+
+        if (!validFile) {
+            if (!savedFile)
+                await this.usersService.repo.update(user.id, {
+                    identificationStatus: UserIdentificationStatus.MISSING_FILES,
+                });
+
+            this.identityFilesStorage.remove(file.filename);
+
+            throw new BadRequestException({ [ref]: error });
+        }
+
+        if (savedFile) this.remove(savedFile);
+
+        const fileRef = this.repo.create({
+            referenceColumn: ref,
+            urn: file.filename,
+            url: `${this.configService.get<string>("APP_URL")}${this.identityFilesStorage.destination}${file.filename}`,
+            user,
+        });
+        await this.repo.save(fileRef);
+
+        const allFilesUploaded = await this.hasAllFiles(user);
+
+        if (allFilesUploaded)
+            await this.usersService.repo.update(user.id, {
+                identificationStatus: UserIdentificationStatus.IDENTIFICATION_FILES_UPLOADED,
+            });
+
+        if (!allFilesUploaded)
+            await this.usersService.repo.update(user.id, {
+                identificationStatus: UserIdentificationStatus.MISSING_FILES,
+            });
+
+        return fileRef;
+    }
 }
